@@ -103,11 +103,6 @@ class Patient:
         self._pd_hemo = PharmacodynamicHemo(self._age)
 
         # Initialize the hemodynamic variables
-
-        # If the user defines the initial values of hemodynamic variables, the base values in the hemodynamic model introduced
-        # by Su et al.(2023) is calculated from the user defined hemoynamic variables; otherwise, base values are the ones
-        # introduced in the study by Su et al. (2023).
-
         if output_init is not None:
             hr = output_init.get('hr') if 'hr' in output_init.keys() else self._pd_hemo.base_hr
             base_hr = hr - self._pd_hemo.base_hr * self._pd_hemo.ltde_hr
@@ -377,25 +372,19 @@ class Patient:
         c_nore_sim[c_nore_sim < 0] = 0
         cp_rocu_sim[cp_rocu_sim < 0] = 0
 
-        # delay in norepinephrine PK model
-        _, c_nore_delayed_sim, x_nore_delayed_sim = signal.lsim(self._pd_hemo.get_nore_delay_ss(), c_nore_sim, t,
-                                                                X0=self._x_nore_delayed)
-        c_nore_delayed_sim[c_nore_delayed_sim < 0] = 0
-
         # Update initial states
-        self._x_prop = x_prop_sim[-1, :]
-        self._x_remi = x_remi_sim[-1, :]
-        self._x_nore = x_nore_sim[-1, :]
-        self._x_rocu = x_rocu_sim[-1, :]
-        self._x_nore_delayed = x_nore_delayed_sim[-1]  # This is correct, x_nore_delayed is a 1D array
+        self._x_prop = x_prop_sim[-1]
+        self._x_remi = x_remi_sim[-1]
+        self._x_nore = x_nore_sim[-1]
+        self._x_rocu = x_rocu_sim[-1]
 
         # Append the plasma concentrations to the history
-        self._cp_prop = np.append(self._cp_prop, cp_prop_sim[:])
-        self._cp_remi = np.append(self._cp_remi, cp_remi_sim[:])
-        self._c_nore = np.append(self._c_nore, c_nore_delayed_sim[:])
-        self._cp_rocu = np.append(self._cp_rocu, cp_rocu_sim[:])
+        self._cp_prop = np.append(self._cp_prop, cp_prop_sim[1:])
+        self._cp_remi = np.append(self._cp_remi, cp_remi_sim[1:])
+        self._c_nore = np.append(self._c_nore, c_nore_sim[1:])
+        self._cp_rocu = np.append(self._cp_rocu, cp_rocu_sim[1:])
 
-        return cp_prop_sim, cp_remi_sim, c_nore_delayed_sim, cp_rocu_sim
+        return cp_prop_sim, cp_remi_sim, c_nore_sim, cp_rocu_sim
 
     def _compute_WAV(self, ce_delayed_prop, ce_remi_sim: np.ndarray, t: np.ndarray):
         """
@@ -415,8 +404,8 @@ class Patient:
                                                          t, self._x_wav_filtered)
 
         ce_wav_filtered[ce_wav_filtered < 0] = 0
-        self._x_wav_filtered = x_wav_filtered[-1, :]
-        self._ce_wav = np.append(self._ce_wav, ce_wav_filtered[:])
+        self._x_wav_filtered = x_wav_filtered[-1]
+        self._ce_wav = np.append(self._ce_wav, ce_wav_filtered[1:])
         # If there is no interaction between propofol and remifentanil, the hill function is applied; otherwise the surface interaction model is used.
         if self._interaction == Interaction.NO_INTERACTION:
             wav = self._pd_doh.hillfun(ce_wav_filtered)
@@ -449,10 +438,10 @@ class Patient:
         _, ce_bis_filtered, x_bis_delay = signal.lsim(bis_delay, ce_bis_filtered, t, self._x_bis_delay)
 
         ce_bis_filtered[ce_bis_filtered < 0] = 0
-        self._ce_bis = np.append(self._ce_bis, ce_bis_filtered[:])
+        self._ce_bis = np.append(self._ce_bis, ce_bis_filtered[1:])
 
-        self._x_bis_lti = x_bis_lti[-1, :]
-        self._x_bis_delay = x_bis_delay[-1]  # this is correct, x_bis is a 1D array
+        self._x_bis_lti = x_bis_lti[-1]
+        self._x_bis_delay = x_bis_delay[-1]
 
         # If there is no interaction between propofol and remifentanil, the hill function is applied; otherwise the surface interaction model is used.
         if self._interaction == Interaction.NO_INTERACTION:
@@ -481,10 +470,14 @@ class Patient:
         :rtype: tuple of np.ndarray
         """
 
-        map_nore = self._pd_hemo.hillfun(c_nore, 'map')
-        co_nore = self._pd_hemo.hillfun(c_nore, 'co')
+        # Norepinephrine's effect on hemodynamic variables
+        _, c_nore_delayed_sim, x_nore_delayed_sim = signal.lsim(self._pd_hemo.get_nore_delay_ss(), c_nore, t,
+                                                                X0=self._x_nore_delayed)
+        c_nore_delayed_sim[c_nore_delayed_sim < 0] = 0
+        self._x_nore_delayed = x_nore_delayed_sim[-1]
 
-        # General pharmacodynamic interaction (GPDI) model between Propofol and Remifentanil
+        map_nore = self._pd_hemo.hillfun(c_nore_delayed_sim, 'map')
+        co_nore = self._pd_hemo.hillfun(c_nore_delayed_sim, 'co')
 
         # Initialize the hemodynamic parameters
         tpr_interval = [self._hemodynamic_variables[0]]
@@ -501,7 +494,7 @@ class Patient:
             options = {'rtol': 1e-2, 'atol': 1e-4}
             sol = solve_ivp(self._pd_hemo.ode_prop_hemodynamic, t_span, initial_conditions,
                             args=(cp_prop[i], cp_remi[i]), t_eval=t_eval, **options)
-            y_ode = sol.y[:, -1]  # This is correct, sol.y is a ndarray of shape (5, 41)
+            y_ode = sol.y[:, -1]
 
             tpr_interval.append(y_ode[0])
             sv_star_interval.append(y_ode[1])
@@ -512,21 +505,25 @@ class Patient:
             tde_sv_interval.append(tde_sv)
             self._hemodynamic_variables = y_ode[:5]
 
-        hr_interval = [x + y for x, y in zip(hr_star_interval, tde_hr_interval)]
-        hr_interval = np.array(hr_interval)
+        hr_interval = np.array([x + y for x, y in zip(hr_star_interval, tde_hr_interval)])
         sv_star_interval = np.array(sv_star_interval)
         tde_sv_interval = np.array(tde_sv_interval)
+        tpr_interval = np.array(tpr_interval)
 
         sv_interval = (sv_star_interval + tde_sv_interval) * (
                 1 - self._pd_hemo.hr_sv * np.log(hr_interval / (self._pd_hemo.base_hr * (1 + self._pd_hemo.ltde_hr))))
 
         # Adding the effect of disturbances
         if self._disturbance_model is not None:
-            interval = min(len(t), len(self._hr_dis) - self._time)
-            tpr_interval = (tpr_interval * hr_interval + self._map_dis[
-                                                         self._time: self._time + interval] / sv_interval) / (
-                                   hr_interval + self._hr_dis[self._time: self._time + interval])
-            hr_interval = hr_interval + self._hr_dis[self._time: self._time + interval]
+            interval = min(len(t) - 1, len(self._hr_dis) - self._time)
+            if interval > 0:
+                idx = slice(1, 1 + interval)
+                dist_idx = slice(self._time, self._time + interval)
+                
+                tpr_interval[idx] = (tpr_interval[idx] * hr_interval[idx] + 
+                                     self._map_dis[dist_idx] / sv_interval[idx]) / (
+                                           hr_interval[idx] + self._hr_dis[dist_idx])
+                hr_interval[idx] = hr_interval[idx] + self._hr_dis[dist_idx]
 
         co_interval = hr_interval * sv_interval / 1000
         map_interval = tpr_interval * co_interval * 1000
@@ -576,7 +573,7 @@ class Patient:
         :param t_s: The sampling time in seconds. Default is 5.
         """
 
-        t = np.arange(0, t_s, 1)  # time vector that goes from 0 to t_s seconds with a step of 1 second
+        t = np.linspace(0, t_s, t_s + 1)
 
         # Generate constant input arrays for the simulation that lasts t_s seconds
         # One step of the simulation is t_s seconds
@@ -585,10 +582,10 @@ class Patient:
         u_sim_nore = np.full(t.shape, u_nore)
         u_sim_rocu = np.full(t.shape, u_rocu)
 
-        self._u_remi.extend(u_sim_remi)
-        self._u_prop.extend(u_sim_prop)
-        self._u_nore.extend(u_sim_nore)
-        self._u_rocu.extend(u_sim_rocu)
+        self._u_remi.extend(u_sim_remi[1:])
+        self._u_prop.extend(u_sim_prop[1:])
+        self._u_nore.extend(u_sim_nore[1:])
+        self._u_rocu.extend(u_sim_rocu[1:])
 
         # Compute plasma concentrations
         cp_prop, cp_remi, c_nore, cp_rocu = self._compute_plasma_concentration(u_sim_prop, u_sim_remi,
@@ -621,21 +618,21 @@ class Patient:
         self._x_ce_remi = x_ce_remi_sim[-1]
         self._x_delay = x_ce_delayed_prop[-1]
 
-        self._ce_prop = np.append(self._ce_prop, ce_prop_sim[:])
-        self._ce_remi = np.append(self._ce_remi, ce_remi_sim[:])
-        self._ce_del = np.append(self._ce_del, ce_delayed_prop[:])
+        self._ce_prop = np.append(self._ce_prop, ce_prop_sim[1:])
+        self._ce_remi = np.append(self._ce_remi, ce_remi_sim[1:])
+        self._ce_del = np.append(self._ce_del, ce_delayed_prop[1:])
 
         # Based on the monitor used for measuring depth of hypnois, wav or bis index is updated.
         if self._doh_measure == DoHMeasure.WAV or self._doh_measure == DoHMeasure.BOTH:
             wav_interval = np.array(self._compute_WAV(ce_delayed_prop, ce_remi_sim, t), dtype=np.float64)
             if self._disturbance_model is not None:
                 interval = min(t_s, len(self._doh_dis) - self._time)
-                wav_interval = wav_interval + self._doh_dis[self._time: self._time + interval]
+                wav_interval[1:1+interval] = wav_interval[1:1+interval] + self._doh_dis[self._time: self._time + interval]
                 wav_interval = np.clip(wav_interval, 0, 100)
         else:
             wav_interval = np.zeros(len(t))
 
-        self._WAV = np.append(self._WAV, wav_interval[:])
+        self._WAV = np.append(self._WAV, wav_interval[1:])
 
         if self._doh_measure == DoHMeasure.BIS or self._doh_measure == DoHMeasure.BOTH:
             bis_interval = np.array(self._compute_BIS(ce_delayed_prop, ce_remi_sim, t), dtype=np.float64)
@@ -645,18 +642,18 @@ class Patient:
                 time = np.linspace(0, len(self._doh_dis) - 1, len(self._doh_dis))
                 _, delayed_disturb, _ = signal.lsim(dbis, self._doh_dis, time)
                 interval = min(t_s, len(delayed_disturb) - self._time)
-                bis_interval = bis_interval + delayed_disturb[self._time: self._time + interval]
+                bis_interval[1:1+interval] = bis_interval[1:1+interval] + delayed_disturb[self._time: self._time + interval]
                 bis_interval = np.clip(bis_interval, 0, 100)
         else:
             bis_interval = np.zeros(len(t))
 
-        self._BIS = np.append(self._BIS, bis_interval[:])
+        self._BIS = np.append(self._BIS, bis_interval[1:])
 
         elems = wav_interval if self._doh_measure == DoHMeasure.WAV or self._doh_measure == DoHMeasure.BOTH else bis_interval
 
         # Check if the patient is in the maintenance phase: if the patient's wav of bis has been under 60  for 3 minutes
         if self._patient_phase == PatientPhase.INDUCTION:
-            for elem in elems:
+            for elem in elems[1:]:
                 self._maintenance_time = self._maintenance_time + 1 if elem < 60 else 0
                 if self._maintenance_time > 180:
                     self._patient_phase = PatientPhase.MAINTENANCE
@@ -668,7 +665,7 @@ class Patient:
             lower_bound = 47.5  # 50 - 5%
             upper_bound = 52.5  # 50 + 5%
 
-            for elem in elems:
+            for elem in elems[1:]:
                 # Check if the element is within the target range and close to the previous value
                 if lower_bound < elem < upper_bound and (
                         not self._steady_state_values or abs(elem - self._steady_state_values[-1]) < 0.2):
@@ -691,16 +688,16 @@ class Patient:
         nmb, ce_rocu_sim = self._compute_nmb(cp_rocu, t)
 
         # Save the stats in the recording arrays
-        self._CO = np.append(self._CO, co_interval[:])
-        self._MAP = np.append(self._MAP, map_interval[:])
-        self._HR = np.append(self._HR, hr_interval[:])
-        self._SV = np.append(self._SV, sv_interval[:])
-        self._TPR = np.append(self._TPR, tpr_interval[:])
+        self._CO = np.append(self._CO, co_interval[1:])
+        self._MAP = np.append(self._MAP, map_interval[1:])
+        self._HR = np.append(self._HR, hr_interval[1:])
+        self._SV = np.append(self._SV, sv_interval[1:])
+        self._TPR = np.append(self._TPR, tpr_interval[1:])
 
-        self._ce_rocu = np.append(self._ce_rocu, ce_rocu_sim[:])
-        self._NMB_m0 = np.append(self._NMB_m0, nmb[0, :])
-        self._NMB_m1 = np.append(self._NMB_m1, nmb[1, :])
-        self._NMB_m2 = np.append(self._NMB_m2, nmb[2, :])
-        self._NMB_m3 = np.append(self._NMB_m3, nmb[3, :])
+        self._ce_rocu = np.append(self._ce_rocu, ce_rocu_sim[1:])
+        self._NMB_m0 = np.append(self._NMB_m0, nmb[0, 1:])
+        self._NMB_m1 = np.append(self._NMB_m1, nmb[1, 1:])
+        self._NMB_m2 = np.append(self._NMB_m2, nmb[2, 1:])
+        self._NMB_m3 = np.append(self._NMB_m3, nmb[3, 1:])
 
         self._time += t_s
