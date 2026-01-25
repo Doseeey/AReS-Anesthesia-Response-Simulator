@@ -103,6 +103,11 @@ class Patient:
         self._pd_hemo = PharmacodynamicHemo(self._age)
 
         # Initialize the hemodynamic variables
+
+        # If the user defines the initial values of hemodynamic variables, the base values in the hemodynamic model introduced
+        # by Su et al.(2023) is calculated from the user defined hemoynamic variables; otherwise, base values are the ones
+        # introduced in the study by Su et al. (2023).
+
         if output_init is not None:
             hr = output_init.get('hr') if 'hr' in output_init.keys() else self._pd_hemo.base_hr
             base_hr = hr - self._pd_hemo.base_hr * self._pd_hemo.ltde_hr
@@ -441,7 +446,7 @@ class Patient:
         self._ce_bis = np.append(self._ce_bis, ce_bis_filtered[1:])
 
         self._x_bis_lti = x_bis_lti[-1]
-        self._x_bis_delay = x_bis_delay[-1]
+        self._x_bis_delay = x_bis_delay[-1]  # this is correct, x_bis is a 1D array
 
         # If there is no interaction between propofol and remifentanil, the hill function is applied; otherwise the surface interaction model is used.
         if self._interaction == Interaction.NO_INTERACTION:
@@ -494,7 +499,7 @@ class Patient:
             options = {'rtol': 1e-2, 'atol': 1e-4}
             sol = solve_ivp(self._pd_hemo.ode_prop_hemodynamic, t_span, initial_conditions,
                             args=(cp_prop[i], cp_remi[i]), t_eval=t_eval, **options)
-            y_ode = sol.y[:, -1]
+            y_ode = sol.y[:, -1] # This is correct, sol.y is a ndarray of shape (5, 41)
 
             tpr_interval.append(y_ode[0])
             sv_star_interval.append(y_ode[1])
@@ -573,7 +578,7 @@ class Patient:
         :param t_s: The sampling time in seconds. Default is 5.
         """
 
-        t = np.linspace(0, t_s, t_s + 1)
+        t = np.linspace(0, t_s, t_s + 1) # time vector that goes from 0 to t_s seconds with a step of 1 second
 
         # Generate constant input arrays for the simulation that lasts t_s seconds
         # One step of the simulation is t_s seconds
